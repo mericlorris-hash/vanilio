@@ -413,7 +413,7 @@ class ShopifyProcessImportExport(models.TransientModel):
         data_queue_obj = self.env['shopify.customer.data.queue.ept']
 
         customer_queue_id = data_queue_obj.search([("record_created_from", "=", "webhook"), ("state", "=", "draft"),
-                                                   ("shopify_instance_id", "=", instance.id)])
+                                                   ("shopify_instance_id", "=", instance.id)], limit=1)
         if customer_queue_id:
             message = "Customer %s added into Queue %s." % (res.get("first_name"), customer_queue_id.name)
         else:
@@ -790,8 +790,10 @@ class ShopifyProcessImportExport(models.TransientModel):
             row_no += 1
             message = ""
             if not record["PRODUCT_TEMPLATE_ID"] or not record["PRODUCT_ID"] or not record["CATEGORY_ID"]:
-                message += "PRODUCT_TEMPLATE_ID Or PRODUCT_ID Or CATEGORY_ID Not As Per Odoo Product in file at row " \
-                           "%s " % row_no
+                message += ("While processing the file, PRODUCT_TEMPLATE_ID or PRODUCT_ID or CATEGORY_ID did not match any existing Odoo product at row %s.\n"
+                           "Action Items:\n"
+                           "- Check the file and verify the data at the mentioned row.\n"
+                           "- Correct the file data and re-import the product using the operation wizard.") % row_no
                 common_log_line_obj.create_common_log_line_ept(shopify_instance_id=instance.id, module="shopify_ept",
                                                                message=message,
                                                                model_name=model)

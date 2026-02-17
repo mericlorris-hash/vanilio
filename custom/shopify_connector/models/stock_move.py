@@ -12,6 +12,9 @@ class StockMove(models.Model):
     shopify_fulfillment_order_id = fields.Char("Fulfillment Order ID")
     shopify_fulfillment_line_id = fields.Char("Fulfillment Line ID")
     shopify_fulfillment_order_status = fields.Char("Fulfillment Order Status")
+    carrier_id = fields.Many2one('delivery.carrier', string="Shipping Carrier",
+                                 help="Carrier extracted from Shopify Fulfillment")
+    tracking_reference = fields.Char(string="Tracking Reference", help="Tracking number from Shopify fulfillment")
 
     def _get_new_picking_values(self):
         """We need this method to set Shopify Instance in Stock Pickin"""
@@ -41,16 +44,18 @@ class StockMove(models.Model):
         moves = self.browse(move_ids)
         for move in moves:
             try:
-                move.picked = False
-                move.move_line_ids.unlink()
-                # move._action_confirm()
-                move._action_assign()
-                move.picked = True
-                # move._set_quantity_done(move.product_uom_qty)
-                move._action_done()
+                with self.env.cr.savepoint():
+                    move.picked = False
+                    move.move_line_ids.unlink()
+                    # move._action_confirm()
+                    move._action_assign()
+                    move.picked = True
+                    # move._set_quantity_done(move.product_uom_qty)
+                    move._action_done()
             except Exception as error:
                 message = "Receive error while assign stock to stock move(%s) of shipped order, Error is:  (%s)" % (move,error)
                 _logger.info(message)
+                continue
         return True
 
     def prepre_query_to_get_stock_move_ept(self):

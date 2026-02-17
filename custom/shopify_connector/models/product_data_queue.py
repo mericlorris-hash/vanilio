@@ -441,7 +441,7 @@ class ShopifyProductDataQueue(models.Model):
         @author: Dipak Gogiya on Date 10-Jan-2020.
         """
         product_data_queue = self.search([("created_by", "=", "webhook"), ("state", "=", "draft"),
-                                          ("shopify_instance_id", "=", instance.id), ('is_action_require', '=', False)])
+                                          ("shopify_instance_id", "=", instance.id), ('is_action_require', '=', False)], limit=1)
         if product_data_queue:
             message = "Product added into Queue %s." % (product_data_queue.name)
         else:

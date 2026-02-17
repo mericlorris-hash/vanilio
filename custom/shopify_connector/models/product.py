@@ -37,6 +37,14 @@ class ProductTemplate(models.Model):
 class ProductProduct(models.Model):
     _inherit = 'product.product'
 
+    shopify_product_count = fields.Integer(string='# Sales Count', compute='_compute_shopify_product_count')
+    
+    def _compute_shopify_product_count(self):
+        shopify_product_obj = self.env['shopify.product.product.ept']
+        for product in self:
+            shopify_products = shopify_product_obj.sudo().search([('product_id', '=', product.id)])
+            product.shopify_product_count = len(shopify_products) if shopify_products else 0
+
     def write(self, vals):
         """
         This method use to archive/unarchive shopify product base on odoo product.

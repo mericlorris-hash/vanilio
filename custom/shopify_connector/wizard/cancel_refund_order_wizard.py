@@ -202,11 +202,15 @@ class ShopifyCancelRefundOrderWizard(models.TransientModel):
                                                                        ("instance_id", "=", shopify_instance.id)])
                 if not shopify_location_id:
                     if restock_type == 'cancel':
-                        log_message = "Primary Location not found for instance %s while refund in shopify." % (
-                            shopify_instance.name)
+                        log_message = ("System tried to create a refund in the Shopify store, but the primary location was not found for the Shopify instance: %s.\n"
+                                      "Action Items:\n"
+                                      "- Verify the primary Shopify location under: Shopify → Configuration → Shopify Locations."
+                                      "- If the primary locations are not available in Odoo, import them using the operation wizard.") % shopify_instance.name
                     else:
-                        log_message = "Location is not set in order (%s).Unable to refund in shopify.\n You can see " \
-                                      "order location here: Order => Shopify Info => Shopify Location " % order_id.name
+                        log_message = ("System tried to process a refund for Order: %s, but the Shopify location was not found.\n"
+                                      "Action Items:\n"
+                                      "- Verify the Shopify location under: Shopify → Configuration → Shopify Locations."
+                                      "- If the locations are not available in Odoo, import them using the operation wizard.") % order_id.name
                     log_line = self.env["common.log.lines.ept"].create_common_log_line_ept(
                         shopify_instance_id=shopify_instance.id, module="shopify_ept", message=log_message,
                         model_name='sale.order',
@@ -270,8 +274,10 @@ class ShopifyCancelRefundOrderWizard(models.TransientModel):
                     try:
                         result = refund_in_shopify.create(vals)
                     except Exception as error:
-                        log_message = "When creating refund in Shopify for order (%s), issue arrive in " \
-                                      "request (%s)" % (order.name, error)
+                        log_message = ("System tried to create refund from Odoo to Shopify store for a Order: %s but recevied error in the response: %s\n"
+                                      "Action Items:\n"
+                                      "- Verify the order details are properly set for the refund data.") % (
+                                      order.name, error)
                         log_line = self.env["common.log.lines.ept"].create_common_log_line_ept(
                             shopify_instance_id=instance.id, module="shopify_ept", message=log_message,
                             model_name=model,
@@ -279,8 +285,10 @@ class ShopifyCancelRefundOrderWizard(models.TransientModel):
                         mismatch_logline.append(log_line.id)
                         continue
                     if not bool(result.id):
-                        log_message = "When creating refund in Shopify for order (%s), issue arrive in " \
-                                      "request (%s)" % (order.name, result.errors.errors.get('base'))
+                        log_message = ("System tried to create refund from Odoo to Shopify store for a Order: %s but recevied error in the response: %s\n"
+                                      "Action Items:\n"
+                                      "- Verify the order details are properly set for "
+                                      "the refund data.") % (order.name, result.errors.errors.get('base'))
                         log_line = self.env["common.log.lines.ept"].create_common_log_line_ept(
                             shopify_instance_id=instance.id, module="shopify_ept", message=log_message,
                             model_name=model,
@@ -296,7 +304,11 @@ class ShopifyCancelRefundOrderWizard(models.TransientModel):
                         order_ref=order.name)
                     mismatch_logline.append(log_line.id)
             else:
-                log_message = "When creating refund in Shopify for order (%s) There is No Payment found so Refund can not be generated in shopify." % (order.name)
+                log_message = ("System tried to create refund from Odoo to Shopify store for a Order: %s but no payment "
+                              "was found, so the refund could not be generated.\n"
+                              "Action Items:\n"
+                              "- Verify the order on the Shopify store.\n"
+                              "- Check for the payment method and its details.") % order.name
                 log_line = self.env["common.log.lines.ept"].create_common_log_line_ept(
                     shopify_instance_id=instance.id, module="shopify_ept", message=log_message,
                     model_name=model,

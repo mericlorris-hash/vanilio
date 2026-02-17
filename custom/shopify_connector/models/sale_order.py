@@ -15,7 +15,9 @@ from markupsafe import Markup
 from ..shopify.pyactiveresource.util import xml_to_dict
 from .. import shopify
 from ..shopify.pyactiveresource.connection import ClientError
-from odoo.tools.float_utils import float_is_zero
+from odoo.tools.float_utils import float_is_zero, float_compare
+import re
+import urllib.parse
 
 utc = pytz.utc
 
@@ -130,12 +132,18 @@ class SaleOrder(models.Model):
             else:
                 partner = instance.shopify_default_pos_customer_id
             if not partner:
-                message = "Default POS Customer is not set.\nPlease set Default POS Customer in " \
-                          "Shopify Configuration."
+                message = ("It seems the imported order is a POS order, and the Shopify API did not provide customer details in the response.\n"
+                            "Action Items:\n"
+                            "- Set a default POS customer in the Shopify configuration.\n"
+                            "- Go to: Shopify → Configuration → Settings → POS Customer.")
         else:
             if not any([order_response.get("customer", {}), order_response.get("billing_address", {}),
                         order_response.get("shipping_address", {})]):
-                message = "Customer details are not available in %s Order." % (order_response.get("order_number"))
+                message = ("System tried to import the order: %s but Customer details is not available order response.\n"
+                          "Action items:\n"
+                          "- Verify the order in the Shopify store and set the proper customer in the existing order.\n"
+                          "- Try to import the order from the operation wizard.") % (
+                          order_response.get("order_number"))
             else:
                 partner = order_response.get("customer") and shopify_res_partner_obj.with_context(
                     order_data_queue=True).shopify_create_contact_partner(
@@ -242,15 +250,7 @@ class SaleOrder(models.Model):
                 self.create_shopify_duties_lines(line.get('duties'), order_response, instance)
 
             if float(total_discount) > 0.0:
-                discount_amount = 0.0
-                for discount_allocation in line.get("discount_allocations"):
-                    if instance.order_visible_currency:
-                        discount_total_price = self.get_price_based_on_customer_visible_currency(
-                            discount_allocation.get("amount_set"), order_response, 0)
-                        if discount_total_price:
-                            discount_amount += float(discount_total_price)
-                    else:
-                        discount_amount += float(discount_allocation.get("amount"))
+                discount_amount = self._get_shopify_discount_allocation_amount(instance, line, order_response)
 
                 if discount_amount > 0.0:
                     _logger.info("Creating discount line for Odoo order(%s) and Shopify order is (%s)", self.name,
@@ -406,16 +406,7 @@ class SaleOrder(models.Model):
                                                                      shipping_product.name or line.get("title"),
                                                                      shipping_price,
                                                                      order_response, is_shipping=True)
-                discount_amount = 0.0
-                for discount_allocation in line.get("discount_allocations"):
-                    if instance.order_visible_currency:
-                        price = discount_allocation.get("amount")
-                        discount_total_price = self.get_price_based_on_customer_visible_currency(
-                            discount_allocation.get("amount_set"), order_response, price)
-                        if discount_total_price:
-                            discount_amount += float(discount_total_price)
-                    else:
-                        discount_amount += float(discount_allocation.get("amount"))
+                discount_amount = self._get_shopify_discount_allocation_amount(instance, line, order_response)
                 if discount_amount > 0.0:
                     _logger.info("Creating discount line for Odoo order(%s) and Shopify order is (%s)", self.name,
                                  order_number)
@@ -456,9 +447,11 @@ class SaleOrder(models.Model):
 
             date_order = self.convert_order_date(order_response)
             if str(instance.import_order_after_date) > date_order:
-                message = "Order %s is not imported in Odoo due to configuration mismatch.\n Received order date is " \
-                          "%s. \n Please check the order after date in shopify configuration." % (order_number,
-                                                                                                  date_order)
+                message = ("Order %s was not imported into Odoo due to a configuration mismatch.\n"
+                           "Received order date: %s \n"
+                           "Action Items:\n"
+                           "- Check the Order After Date in Shopify configuration and ensure it includes this order date.\n"
+                           "- Go to: Shopify → Configuration → Settings.") % (order_number, date_order)
                 _logger.info(message)
                 common_log_line_obj.create_common_log_line_ept(shopify_instance_id=instance.id, module="shopify_ept",
                                                                message=message,
@@ -544,6 +537,8 @@ class SaleOrder(models.Model):
                     # Below code add for create partially/fully refund
                     message = self.create_shipped_order_refund(shopify_financial_status, order_response, sale_order,
                                                                created_by)
+                    if instance.use_graphql_api:
+                        message = self.check_and_create_return_picking(order_response, sale_order, created_by)
                 elif not sale_order.is_risky_order:
                     if sale_order.shopify_order_status == "partial":
                         sale_order.process_order_fullfield_qty(order_response)
@@ -755,9 +750,11 @@ class SaleOrder(models.Model):
                 product = instance.gift_card_product_id or False
                 if product:
                     continue
-                message = "Please upgrade the module and then try to import order(%s).\n Maybe the Gift Card " \
-                          "product " \
-                          "has been deleted, it will be recreated at the time of module upgrade." % order_number
+                message = ("System tried to import the order: %s but in the order there are Gift card details but "
+                           "Gift card products has been deleted\n"
+                           "Action items:\n"
+                           "- Upgrade the Shopify connector in odoo. so it will create Gift Card product in odoo\n"
+                           "- Try to reprocess the order data queue ") % order_number
                 common_log_line_obj.create_common_log_line_ept(shopify_instance_id=instance.id, module="shopify_ept",
                                                                message=message,
                                                                model_name='sale.order', order_ref=order_number,
@@ -848,9 +845,8 @@ class SaleOrder(models.Model):
             payment_vals = self.prepare_vals_shopify_multi_payment(instance, order_data_queue_line, order_response,
                                                                    payment_gateway, workflow)
             if not payment_vals:
-                message = ("Payment Data not found while importing Shopify Order(%s) and id (%s) \n"
-                           "Reasons : Order might be refunded, or Not Paid. or Trasancations are Failed") % (
-                              order_number, order_response.get("id"))
+                message = (f"No payment vals Found Order transaction for Shopify Order({order_number}) for multiple"
+                           f" payment. Payment might be pending or fully refunded.")
                 _logger.info(message)
             order_vals.update({'shopify_payment_ids': payment_vals, 'is_shopify_multi_payment': True})
         payments = []
@@ -862,9 +858,8 @@ class SaleOrder(models.Model):
                 payment_vals = self.prepare_vals_shopify_multi_payment(instance, order_data_queue_line, order_response,
                                                                        payment_gateway, workflow)
                 if not payment_vals:
-                    message = ("Payment Data not found while importing Shopify Order(%s) and id (%s) \n"
-                               "Reasons : Order might be refunded, or Not Paid. or Trasancations are Failed") % (
-                                  order_number, order_response.get("id"))
+                    message = (f"No payment vals Found Order transaction for Shopify Order({order_number}) for "
+                                 f"multiple payment. Payment might be pending or fully refunded.")
                     _logger.info(message)
                 order_vals.update({'shopify_payment_ids': payment_vals, 'is_shopify_multi_payment': True})
         order = self.create(order_vals)
@@ -1179,6 +1174,31 @@ class SaleOrder(models.Model):
         if product and product_qty and product_uom:
             vals = self.prepare_val_for_stock_move_ept(product, product_qty, product_uom, vendor_location,
                                                        customers_location, order_line, bom_line)
+            queue_id = self.env.context.get('active_ids')
+            order_response_data = {}
+            if queue_id:
+                order_data_line = self.env['shopify.order.data.queue.line.ept'].search(
+                    [('shopify_order_data_queue_id', 'in', queue_id), ('shopify_order_id', '=', self.shopify_order_id)],
+                    limit=1)
+                if order_data_line and order_data_line.order_data:
+                    order_response_data = json.loads(order_data_line.order_data)
+            fulfillments = order_response_data.get('fulfillments', [])
+            for fulfillment in fulfillments:
+                shopify_line_item_ids = [str(line.get('id')) for line in fulfillment.get('line_items', []) if
+                                         line.get('id')]
+                if not order_line.shopify_line_id or order_line.shopify_line_id not in shopify_line_item_ids:
+                    continue
+                tracking_company = fulfillment.get('tracking_company')
+                if tracking_company:
+                    carrier = self.env['delivery.carrier'].search([('shopify_tracking_company', '=', tracking_company),
+                                                                   ('company_id', 'in',
+                                                                    [self.shopify_instance_id.shopify_company_id.id,
+                                                                     False])], limit=1)
+                    if carrier:
+                        vals.update({'carrier_id': carrier.id})
+                if fulfillment.get('tracking_number'):
+                    vals.update({'tracking_reference': fulfillment.get('tracking_number')})
+                break
             stock_move = self.env['stock.move'].create(vals)
             stock_move.reference = _('Auto processed move : %s') % product.display_name
             stock_move._action_assign()
@@ -1222,19 +1242,13 @@ class SaleOrder(models.Model):
                     utm_dict.update({utm_split.split("=")[0]: utm_split.split("=")[1]})
 
             if utm_dict.get('utm_source'):
-                utm_source = utm_source_obj.search([('name', '=ilike', utm_dict.get('utm_source'))], limit=1)
-                if not utm_source:
-                    utm_source = utm_source_obj.create({'name': utm_dict.get('utm_source')})
+                utm_source = self._find_or_create_utm_record(utm_source_obj, utm_dict.get('utm_source'))
 
             if utm_dict.get('utm_medium'):
-                utm_medium = utm_medium_obj.search([('name', '=ilike', utm_dict.get('utm_medium'))], limit=1)
-                if not utm_medium:
-                    utm_medium = utm_medium_obj.create({'name': utm_dict.get('utm_medium')})
+                utm_medium = self._find_or_create_utm_record(utm_medium_obj, utm_dict.get('utm_medium'))
 
             if utm_dict.get('utm_campaign'):
-                utm_campaign = utm_campaign_obj.search([('name', '=ilike', utm_dict.get('utm_campaign'))], limit=1)
-                if not utm_campaign:
-                    utm_campaign = utm_campaign_obj.create({'name': utm_dict.get('utm_campaign')})
+                utm_campaign = self._find_or_create_utm_record(utm_campaign_obj, utm_dict.get('utm_campaign'))
 
         if not utm_source:
             utm_source = self.find_or_create_shopify_source(order_response.get('source_name'))
@@ -1327,6 +1341,8 @@ class SaleOrder(models.Model):
                                                                   is_duties)
         if is_discount:
             order_line_vals["name"] = "Discount for " + str(product_name)
+            if previous_line:
+                order_line_vals['shopify_related_line_id'] = f"discount_{previous_line.shopify_line_id}"
             if instance.apply_tax_in_order == "odoo_tax" and previous_line:
                 order_line_vals["tax_ids"] = previous_line.tax_ids
 
@@ -1701,10 +1717,11 @@ class SaleOrder(models.Model):
             tracking_numbers, line_items = sale_order.prepare_tracking_numbers_and_lines_for_fulfilment(picking)
 
             if not line_items:
-                message = ("No order lines found for the update order shipping status for order [%s] \n"
-                           "Or If the product is kit product in Delivery then it Will only get updated when all quantity "
-                           "are delivered (Check (Delivered) in Sale order line") \
-                          % sale_order.name
+                message = ("System tried to update the shipping status from Odoo to the Shopify store for Order: %s, but the status was not updated.\n"
+                              "Possible reason:\n"
+                              "The product is a kit product in the delivery order, and shipping status will only be "
+                              "updated when all quantities are delivered. (Check 'Delivered' in the Sales Order line.)") % sale_order.name
+                
                 _logger.info(message)
                 log_lines.append(
                     common_log_line_obj.create_common_log_line_ept(shopify_instance_id=instance.id,
@@ -1802,8 +1819,12 @@ class SaleOrder(models.Model):
                     location_ids_mapping.setdefault(move.shopify_fulfillment_order_id,
                                                     shopify_location_id.shopify_location_id)
                 else:
-                    message = "The Shopify location could not be found due to the warehouse: %s not configured into the Warehouse in Order, please configure the Warehouse in Order in the Shopify location in order to solve the issue." % (
-                        move.warehouse_id.name)
+                    message = ("System tried to update the shipping status from the Odoo to Shopify store "
+                               "but Order in the warehouse[%s] is not set the shopify location.\n"
+                               "Action items:\n"
+                               "- Verify the Shopify location under: Shopify → Configuration → Shopify Locations.\n"
+                               "- If the locations are not available in Odoo, import them using the operation wizard.\n"
+                               "- Set the order in the Warehouse in the shopify location ") % move.warehouse_id.name
                     _logger.info(message)
                     log_lines.append(
                         common_log_line_obj.create_common_log_line_ept(
@@ -1923,8 +1944,12 @@ class SaleOrder(models.Model):
                     [('warehouse_for_order', '=', order_line.warehouse_id_ept.id), ("instance_id", "=", instance.id)],
                     limit=1)
                 if not shopify_location_id:
-                    message = "The Shopify location could not be found due to the warehouse: %s not configured into the Warehouse in Order, please configure the Warehouse in Order in the Shopify location in order to solve the issue." % (
-                        order_line.warehouse_id_ept.name)
+                    message = ("System tried to update the shipping status from the Odoo to Shopify store "
+                               "but Order in the warehouse[%s] is not set the shopify location.\n"
+                               "Action items:\n"
+                               "- Verify the Shopify location under: Shopify → Configuration → Shopify Locations.\n"
+                               "- If the locations are not available in Odoo, import them using the operation wizard.\n"
+                               "- Set the order in the Warehouse in the shopify location ") % order_line.warehouse_id_ept.name
                     _logger.info(message)
                     self.env["common.log.lines.ept"].create_common_log_line_ept(shopify_instance_id=instance.id,
                                                                                 module="shopify_ept",
@@ -1946,9 +1971,11 @@ class SaleOrder(models.Model):
                 shopify_location_id = shopify_location_obj.search([("is_primary_location", "=", True),
                                                                    ("instance_id", "=", instance.id)])
             if not shopify_location_id:
-                message = "Primary Location not found for instance %s while update order " \
-                          "shipping status." % (
-                              instance.name)
+                message = ("System tried to update shipping order status from Odoo to the Shopify store, but the primary location"
+                              "was not found for the Shopify instance: %s.\n"
+                              "Action Items:\n"
+                              "- Verify the primary Shopify location under: Shopify → Configuration → Shopify Locations.\n"
+                              "- If the primary locations are not available in Odoo, import them using the operation wizard") % instance.name
                 _logger.info(message)
                 self.env["common.log.lines.ept"].create_common_log_line_ept(shopify_instance_id=instance.id,
                                                                             module="shopify_ept",
@@ -2169,27 +2196,9 @@ class SaleOrder(models.Model):
                     need_to_done_queue = False
                     self.process_cancel_order_webhook_ept(order, instance, queue_line, order_data)
 
-                if order_data.get('fulfillment_status') in (
-                        'fulfilled', 'partial') and instance.ship_order_webhook and order_data.get('fulfillments'):
-                    need_to_done_queue = False
-                    self.process_order_fulfillment_ept(order, shopify_instance, order_data, queue_line)
-
-                if shopify_status in ["refunded", "partially_refunded"] and order_data.get(
-                        "refunds") and instance.refund_order_webhook:
-                    need_to_done_queue = False
-                    self.process_order_refund_data_ept(shopify_status, order_data, order, created_by, instance,
-                                                       queue_line)
-                    if instance.return_picking_order:
-                        self.process_picking_return(shopify_status, order_data, order, created_by, instance,
-                                                    queue_line)
-
                 if instance.customer_order_webhook:
                     need_to_done_queue = False
                     order.shopify_change_customer_in_order_webhook(instance, queue_line, order_data)
-
-                if shopify_status == 'paid':
-                    self.webhook_paid_workflow_process_ept(order, instance, queue_line, order_data, shopify_status)
-                    need_to_done_queue = True
 
                 if instance.add_new_product_order_webhook and order_data.get('fulfillment_status') != 'fulfilled':
                     need_to_done_queue = False
@@ -2199,6 +2208,24 @@ class SaleOrder(models.Model):
                                                                                                       'partial']:
                     need_to_done_queue = False
                     order.update_qty_in_order_webhook_ept(instance, queue_line, order_data)
+
+                if shopify_status == 'paid':
+                    self.webhook_paid_workflow_process_ept(order, instance, queue_line, order_data, shopify_status)
+                    need_to_done_queue = True
+
+                if order_data.get('fulfillment_status') in (
+                        'fulfilled', 'partial') and instance.ship_order_webhook and order_data.get('fulfillments'):
+                    need_to_done_queue = False
+                    self.process_order_fulfillment_ept(order, shopify_instance, order_data, queue_line)
+
+                if shopify_status in ["refunded", "partially_refunded"] and order_data.get(
+                    "refunds") and instance.refund_order_webhook:
+                    need_to_done_queue = False
+                    self.process_order_refund_data_ept(shopify_status, order_data, order, created_by, instance,
+                                                       queue_line)
+                    if instance.return_picking_order:
+                        self.process_picking_return(shopify_status, order_data, order, created_by, instance,
+                                                    queue_line)
 
                 if shopify_tags:
                     self.update_tag_in_shopify_order(order, shopify_tags)
@@ -2527,17 +2554,7 @@ class SaleOrder(models.Model):
                 self.create_shopify_duties_lines(line.get('duties'), order_response, instance)
 
             if float(total_discount) > 0.0:
-                discount_amount = 0.0
-                for discount_allocation in line.get("discount_allocations"):
-                    if instance.order_visible_currency:
-                        price = discount_allocation.get("amount")
-                        discount_total_price = self.get_price_based_on_customer_visible_currency(
-                            discount_allocation.get("amount_set"), order_response, price)
-                        if discount_total_price:
-                            discount_amount += float(discount_total_price)
-                    else:
-                        discount_amount += float(discount_allocation.get("amount"))
-
+                discount_amount = self._get_shopify_discount_allocation_amount(instance, line, order_response)
                 if discount_amount > 0.0:
                     _logger.info("Creating discount line for Odoo order(%s) and Shopify order is (%s)", self.name,
                                  order_number)
@@ -2621,6 +2638,7 @@ class SaleOrder(models.Model):
         sale_line_obj = self.env['sale.order.line']
         common_log_line_obj = self.env["common.log.lines.ept"]
         response_data, shopify_line_ids = self.prepare_response_data_of_order_qty(order_data)
+        discount_data = response_data.pop('discount_data')
         existing_order_qty_data = self.prepare_existing_order_data_of_qty(response_data)
         data = []
         is_updated_qty = False
@@ -2658,6 +2676,8 @@ You can take the following actions manually:\n 1. Reserve Order: If the order ha
                 total_qty = effective_qty + e_o_qty
                 data.append([1, order_line.id, {'product_uom_qty': total_qty}])
                 is_updated_qty = True
+        if is_updated_qty and discount_data:
+            discount_line_data = self.update_discount_price_in_order_line_webhook(discount_data, order_data)
         work_flow_process_record = self.auto_workflow_process_id
         if is_updated_qty and work_flow_process_record:
             queue_line.write({'state': 'done', 'processed_at': datetime.now()})
@@ -2691,6 +2711,56 @@ You can take the following actions manually:\n 1. Reserve Order: If the order ha
             self.validate_invoice_ept(invoices)
             if work_flow_process_record.register_payment:
                 self.paid_invoice_ept(invoices)
+    
+    def update_discount_price_in_order_line_webhook(self, discount_data, order_response):
+        """
+        Zeros out the existing discount line's quantity and creates a new, financially
+        accurate discount line using the existing helper method, ONLY IF the new
+        total discount amount is greater than the current total discount.
+
+        :param discount_data: Dict {discount_line_id_key: new_total_discount_amount}
+        :param order_response: Dictionary containing the Shopify order response data.
+        :returns: boolean indicating if any discount line was updated/created.
+        """
+        instance = self.shopify_instance_id
+        is_updated = False
+        
+        existing_discount_lines = self.order_line.filtered(lambda ol: ol.shopify_related_line_id)
+        original_order_lines = self.order_line - existing_discount_lines
+        
+        for shopify_line_id_key, new_total_discount_amount in discount_data.items():
+            original_shopify_id = shopify_line_id_key.replace('discount_', '')
+            discount_line_to_zero = existing_discount_lines.filtered(
+                lambda ol: ol.shopify_related_line_id == shopify_line_id_key and not float_is_zero(ol.product_uom_qty,
+                                                                                                   precision_digits=4)
+            )
+            original_line = original_order_lines.filtered(
+                lambda ol: ol.shopify_line_id == original_shopify_id
+            )
+            if not discount_line_to_zero or not original_line:
+                continue
+            discount_line_record = discount_line_to_zero[0]
+            original_product_line_record = original_line[0]  # The line used for 'previous_line' context
+            current_total_discount = abs(discount_line_record.price_unit)
+            if float_compare(new_total_discount_amount, current_total_discount, precision_digits=4) == 1:
+                _logger.info(
+                    "Discount increased detected for Shopify line ID %s. Zeroing out old line and creating new for order %s.",
+                    original_shopify_id, self.name)
+                if discount_line_record.product_uom_qty > 0:
+                    discount_line_record.write({'product_uom_qty': 0.0})
+                new_price_unit = float(new_total_discount_amount) * -1
+                order_line = self.shopify_create_sale_order_line({}, instance.discount_product_id,
+                                                                 1,  # Quantity is 1
+                                                                 original_product_line_record.product_id.name,
+                                                                 # Product name for line description
+                                                                 new_price_unit, order_response,
+                                                                 previous_line=original_product_line_record,
+                                                                 is_discount=True
+                                                                 )
+                is_updated = True
+            # If the discount decreased/removed, the update is skipped.
+        return is_updated
+
 
     def prepare_response_data_of_order_qty(self, order_data):
         """
@@ -2699,18 +2769,25 @@ You can take the following actions manually:\n 1. Reserve Order: If the order ha
         """
         response_data = {}
         shopify_line_ids = []
+        discount_data = {}
+        instance = self.shopify_instance_id
         for line in order_data.get('line_items'):
             line_id = line.get('id')
             if order_data.get('financial_status') == "refunded":
                 qty = int(line.get('quantity'))
             else:
                 qty = int(line.get('fulfillable_quantity'))
+            discount_amount = self._get_shopify_discount_allocation_amount(instance, line, order_data)
+            if discount_amount > 0.0:
+                discount_key = f"discount_{line_id}"
+                discount_data[discount_key] = discount_amount
             if response_data.get(line_id):
                 qty = qty + response_data.get(line_id)
                 response_data.update({line_id: qty})
             else:
                 response_data.update({line_id: qty})
             shopify_line_ids.append(line_id)
+        response_data['discount_data'] = discount_data
         return response_data, shopify_line_ids
 
     def prepare_existing_order_data_of_qty(self, response_data):
@@ -2731,6 +2808,21 @@ You can take the following actions manually:\n 1. Reserve Order: If the order ha
             else:
                 data.update({line_id: qty})
         return data
+    
+    def _get_shopify_discount_allocation_amount(self, instance, line, order_data):
+        """
+        This method is use to get the discount allocation amount for the order line.
+        """
+        discount_amount = 0.0
+        for discount_allocation in line.get('discount_allocations', []):
+            if instance.order_visible_currency:
+                discount_total_price = self.get_price_based_on_customer_visible_currency(
+                    discount_allocation.get("amount_set"), order_data, 0)
+                if discount_total_price:
+                    discount_amount += float(discount_total_price)
+            else:
+                discount_amount += float(discount_allocation.get("amount"))
+        return discount_amount
 
     def cancel_shopify_order(self):
         """
@@ -2912,12 +3004,18 @@ You can take the following actions manually:\n 1. Reserve Order: If the order ha
         else:
             shopify_financial_status = "Partially Refunded"
         if not self.invoice_ids:
-            message = "The refund was not generated due to the absence of the invoice for order [%s] in Odoo. You can take the following manual actions:\n 1.Create and validate the invoice manually from the sales order.\n 2.Reprocess the queue." % order_name
+            message = ("System tried to generate a refund, but no invoice was found for Order: %s in Odoo.\n"
+                       "Action Items:\n"
+                       "- Create and validate the invoice manually from the Sales Order.\n"
+                       "- Reprocess the queue.") % order_name
             return message
         invoices = self.invoice_ids.filtered(lambda x: x.move_type == "out_invoice")
         for invoice in invoices:
             if not invoice.state == "posted":
-                message = "The refund was not generated because the invoice for order [%s] was not posted in Odoo. You can take the following manual actions:\n 1.Create and validate the invoice manually from the sales order.\n 2.Reprocess the queue." % order_name
+                message = ("System tried to generate a refund, but the invoice for Order: %s is not in the Posted state.\n"
+                              "Action Items:\n"
+                              "- Create and validate the invoice manually from the Sales Order.\n"
+                              "- Reprocess the queue.") % order_name
                 return message
         refund_invoices = self.invoice_ids.filtered(lambda x: x.move_type == "out_refund" and x.state == "posted")
         if refund_invoices:
@@ -3423,6 +3521,131 @@ You can take the following actions manually:\n 1. Reserve Order: If the order ha
         if self.shopify_instance_id:
             res.update({'date_order': self.date_order})
         return res
+    
+    def _normalize_name(self, name):
+        """Normalize name for consistent comparison"""
+        if not name:
+            return ''
+        name = urllib.parse.unquote(name)  # Decode URL-encoded values
+        name = re.sub(r'[\\\/\s]+', ' ', name)  # Replace multiple slashes/backslashes/spaces with single space
+        return name.strip()
+    
+    def _find_or_create_utm_record(self, model_obj, raw_name):
+        """Common logic to find or create UTM source, medium, or campaign"""
+        
+        if not raw_name:
+            return False
+        normalized_name = self._normalize_name(raw_name)
+        record = model_obj.search([('name', '=ilike', normalized_name)], limit=1)
+        if record: return record
+        all_records = model_obj.search([])
+        for rec in all_records:
+            if self._normalize_name(rec.name) == normalized_name:
+                return rec
+        return model_obj.create({'name': normalized_name})
+
+    def check_and_create_return_picking(self, order_response, sale_order, created_by):
+        """
+        This method is used to create return.
+        :param order_response:
+        :param sale_order:
+        :param created_by:
+        :return:
+        """
+        message = ""
+        stock_move_obj = self.env['stock.move']
+        move_ids = stock_move_obj.search(
+            [('picking_id', '=', False), ('sale_line_id', 'in', sale_order.order_line.ids), ('state', '=', 'done')])
+        if not move_ids or sale_order.shopify_order_status != 'fulfilled':
+            message = "Move is not available, so return can't be generated."
+        return_data = order_response.get('returns', [])
+        return_data_dict = self.prepare_return_data(return_data, sale_order)
+        need_to_remove_lines = []
+        return_wiz = self.env['stock.return.picking'].with_context(
+            active_ids=sale_order.ids,
+            active_id=sale_order.ids[0],
+            active_model='sale.order',
+            default_sale_order_ept_id=sale_order.ids[0]
+        ).sudo().create({})
+        return_wiz._onchange_sale_order_id()
+        return_picking_ids = self.picking_ids.filtered(
+            lambda x: x.picking_type_code == 'incoming' and x.state != 'cancel'
+        )
+        for return_move_line in return_wiz.product_return_moves:
+            refund_line = next(
+                (item for item in return_data_dict if item["product_id"] == return_move_line.product_id.id),
+                None)
+            if refund_line:
+                qty_to_return = refund_line["quantity"]
+                existing_return_qty = return_picking_ids.move_ids.filtered(
+                    lambda x: x.product_id.id == refund_line["product_id"]).mapped('product_uom_qty')
+                return_qty = sum(existing_return_qty)
+                if qty_to_return > return_qty:
+                    return_move_line.write({
+                        'quantity': qty_to_return - return_qty,
+                        'to_refund': True
+                    })
+                else:
+                    need_to_remove_lines.append(return_move_line)
+            else:
+                need_to_remove_lines.append(return_move_line)
+        for need_to_remove_line in need_to_remove_lines:
+            need_to_remove_line.unlink()
+        if return_wiz.product_return_moves:
+            res = return_wiz.create_returns_ept()
+            return_picking = self.env['stock.picking'].browse(res['res_id'])
+            return_picking.updated_in_shopify = True
+            return_picking.message_post(
+                body=_("Return Picking is Generated by Webhook for Stock moves as Order is Returned in Shopify."))
+            if return_picking:
+                # if self.shopify_instance_id.stock_validate_for_return:
+                return_picking.button_validate()
+                return_picking.message_post(body=_("Return Picking is Validate by Webhook."))
+
+        return message
+
+    def prepare_return_data(self, returns_data, sale_order):
+        """
+        Prepare return data dictionary of product and its quantity
+        based on Shopify return response.
+        """
+        return_data_dict = []
+
+        def add_product_qty(product, qty):
+            for item in return_data_dict:
+                if item["product_id"] == product.id:
+                    item["quantity"] += qty
+                    return
+            return_data_dict.append({"product_id": product.id, "quantity": qty})
+
+        for return_data in returns_data:
+            for line in return_data.get("return_line_items", []):
+                qty = line.get("quantity") or 0
+                if qty <= 0:
+                    continue
+
+                fulfillment_line = line.get("fulfillment_line_item") or {}
+                line_item = fulfillment_line.get("line_item") or {}
+                shopify_line_id = str(line_item.get("id") or "")
+
+                if not shopify_line_id:
+                    continue
+
+                order_line = sale_order.order_line.filtered(lambda l: l.shopify_line_id == shopify_line_id)
+                if not order_line:
+                    continue
+
+                product = order_line.product_id
+
+                # Handle BOM products
+                bom_lines = self.check_for_bom_product(product)
+                if bom_lines:
+                    for bom_line in bom_lines:
+                        add_product_qty(bom_line[0].product_id, bom_line[1].get("qty", 0) * qty)
+                else:
+                    add_product_qty(product, qty)
+
+        return return_data_dict
 
 
 class SaleOrderLine(models.Model):
@@ -3433,6 +3656,8 @@ class SaleOrderLine(models.Model):
     shopify_fulfillment_order_id = fields.Char("Fulfillment Order ID")
     shopify_fulfillment_line_id = fields.Char("Fulfillment Line ID")
     shopify_fulfillment_order_status = fields.Char("Fulfillment Order Status")
+    shopify_related_line_id = fields.Char(string='Shopify Related Order Line',
+                                          help='Links discount/duties lines to the main product line for Shopify sync.')
 
     def unlink(self):
         """

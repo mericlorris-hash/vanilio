@@ -195,14 +195,18 @@ class ShopifyProductTemplateEpt(models.Model):
                     time.sleep(int(float(error.response.headers.get('Retry-After', 5))))
                     result = [shopify.Product().find(template_id)]
                     return result
-                message = "Error while importing product for order. Product ID: %s.\nError: %s\n%s" % (
-                    template_id, str(error.response.code) + " " + error.response.msg,
-                    json.loads(error.response.body.decode()).get("errors")[0])
+                message = ("System tried to import Shopify order with Product ID: %s, but received a %s error during the API call to fetch product details.\n"
+                              "Action Items:\n"
+                              "- Try processing the order data queue manually after some time from: Shopify → Logs → Order Queue") % (
+                              template_id, str(error.response.code) + " " + error.response.msg)
                 self.create_log_line_for_queue_line(instance, message, model_name, False, order_queue_line, "")
         except Exception as error:
             if order_queue_line:
-                message = "Shopify product did not exist in Shopify store with product id: %s \nError : %s" % (
-                    template_id, str(error))
+                message = ("System attempted to retrieve Product ID: %s for order processing,but the product is no longer available in the Shopify store.As a result, the order could not be imported into Odoo.\n"
+                          "Action Items:\n"
+                          "- Verify the product's availability in the Shopify store.\n"
+                          "- If the product has been removed, manually create it in Odoo.\n"
+                          "- Re-import the order using the specific order ID functionality.") % (template_id)
                 self.create_log_line_for_queue_line(instance, message, model_name, False, order_queue_line, "")
 
         return result
@@ -481,22 +485,46 @@ class ShopifyProductTemplateEpt(models.Model):
                                 break
                         else:
                             if instance.shopify_sync_product_with == "sku":
-                                message = "Product %s not found for SKU %s in Odoo." % (name, sku)
+                                message = ("Tried to search for a product in Odoo with name: %s and SKU: %s.\n"
+                                           "Action Items:\n"
+                                           "- Check product configuration under: Shopify → Configuration → Settings → Product Configuration.\n"
+                                           "- Manually map the product in Odoo using the mentioned SKU.\n"
+                                           "- If the product exists in Odoo, reprocess the queue.") % (name, sku)
                             elif instance.shopify_sync_product_with == "barcode":
-                                message = "Product %s not found for Barcode %s in Odoo." % (name, barcode)
+                                message = ("Tried to search for a product in Odoo with name: %s and Barcode: %s.\n"
+                                           "Action Items:\n"
+                                           "- Check product configuration under: Shopify → Configuration → Settings → Product Configuration.\n"
+                                           "- Manually map the product in Odoo using the mentioned Barcode.\n"
+                                           "- If the product exists in Odoo, reprocess the queue.") % (name, barcode)
                             else:
-                                message = "Product %s not found for SKU %s and Barcode %s in Odoo." % (name, sku, barcode)
+                                message = ("Tried to search for a product in Odoo with name: %s, SKU: %s, and Barcode: %s.\n"
+                                          "Action Items:\n"
+                                          "- Check product configuration under: Shopify → Configuration → Settings → Product Configuration.\n"
+                                          "- Manually map the product in Odoo using the mentioned SKU and Barcode.\n"
+                                          "- If the product exists in Odoo, reprocess the queue.") % (name, sku, barcode)
 
                             self.create_log_line_for_queue_line(instance, message, model_name, product_data_line_id,
                                                                 order_data_line_id, sku)
                             continue
                 else:
                     if instance.shopify_sync_product_with == "sku":
-                        message = "Product %s not found for SKU %s in Odoo." % (name, sku)
+                        message = ("Tried to search for a product in Odoo with name: %s and SKU: %s.\n"
+                                   "Action Items:\n"
+                                   "- Check product configuration under: Shopify → Configuration → Settings → Product Configuration.\n"
+                                   "- Manually map the product in Odoo using the mentioned SKU.\n"
+                                   "- If the product exists in Odoo, reprocess the queue.") % (name, sku)
                     elif instance.shopify_sync_product_with == "barcode":
-                        message = "Product %s not found for Barcode %s in Odoo." % (name, barcode)
+                        message = ("Tried to search for a product in Odoo with name: %s and Barcode: %s.\n"
+                                   "Action Items:\n"
+                                   "- Check product configuration under: Shopify → Configuration → Settings → Product Configuration.\n"
+                                   "- Manually map the product in Odoo using the mentioned Barcode.\n"
+                                   "- If the product exists in Odoo, reprocess the queue.") % (name, barcode)
                     else:
-                        message = "Product %s not found for SKU %s and Barcode %s in Odoo." % (name, sku, barcode)
+                        message = ("Tried to search for a product in Odoo with name: %s, SKU: %s, and Barcode: %s.\n"
+                                   "Action Items:\n"
+                                   "- Check product configuration under: Shopify → Configuration → Settings → Product Configuration.\n"
+                                   "- Manually map the product in Odoo using the mentioned SKU and Barcode.\n"
+                                   "- If the product exists in Odoo, reprocess the queue.") % (name, sku, barcode)
 
                     self.create_log_line_for_queue_line(instance, message, model_name, product_data_line_id,
                                                         order_data_line_id, sku)
@@ -601,11 +629,23 @@ class ShopifyProductTemplateEpt(models.Model):
                     continue
             else:
                 if instance.shopify_sync_product_with == "sku":
-                    message = "Product %s not found for SKU %s in Odoo." % (name, sku)
+                    message = ("Tried to search for a product in Odoo with name: %s and SKU: %s.\n"
+                               "Action Items:\n"
+                               "- Check product configuration under: Shopify → Configuration → Settings → Product Configuration.\n"
+                               "- Manually map the product in Odoo using the mentioned SKU.\n"
+                               "- If the product exists in Odoo, reprocess the queue.") % (name, sku)
                 elif instance.shopify_sync_product_with == "barcode":
-                    message = "Product %s not found for Barcode %s in Odoo." % (name, barcode)
+                    message = ("Tried to search for a product in Odoo with name: %s and Barcode: %s.\n"
+                               "Action Items:\n"
+                               "- Check product configuration under: Shopify → Configuration → Settings → Product Configuration.\n"
+                               "- Manually map the product in Odoo using the mentioned Barcode.\n"
+                               "- If the product exists in Odoo, reprocess the queue.") % (name, barcode)
                 else:
-                    message = "Product %s not found for SKU %s and Barcode %s in Odoo." % (name, sku, barcode)
+                    message = ("Tried to search for a product in Odoo with name: %s, SKU: %s and Barcode %s.\n"
+                               "Action Items:\n"
+                               "- Check product configuration under: Shopify → Configuration → Settings → Product Configuration.\n"
+                               "- Manually map the product in Odoo using the mentioned SKU and Barcode.\n"
+                               "- If the product exists in Odoo, reprocess the queue.") % (name, sku, barcode)
 
                 self.create_log_line_for_queue_line(instance, message, model_name, product_data_line_id,
                                                     order_data_line_id, sku)
@@ -635,11 +675,24 @@ class ShopifyProductTemplateEpt(models.Model):
         """
         message = ""
         if match_by == "sku" and not sku:
-            message = "Product %s have no sku having variant id %s." % (name, variant_id)
+            message = ("System tried to process the product: %s with a Shopify Variant ID: %s, but the SKU was missing in the Shopify API response.\n"
+                      "Action Items:\n"
+                      "- Set the correct SKU on the variant product in the Shopify store.\n"
+                      "- Once updated, re-import the product or order using the specific import functionality.") % (
+                          name, variant_id)
         elif match_by == "barcode" and not barcode:
-            message = "Product %s have no barcode having variant id %s." % (name, variant_id)
+            message = ("System tried to process the product: %s with a Shopify Variant ID: %s, but the Barcode was missing in the Shopify API response.\n"
+                      "Action Items:\n"
+                      "- Set the correct Barcode on the variant product in the Shopify store.\n"
+                      "- Once updated, re-import the product or order using the specific import functionality.") % (
+                      name, variant_id)
         elif match_by == "sku_or_barcode" and not sku and not barcode:
-            message = "Product %s have no sku and barcode having variant id %s." % (name, variant_id)
+            message = ("System tried to process the product: %s with a Shopify Variant ID: %s, but both the SKU and Barcode were missing in the Shopify API response.\n"
+                      "Action Items:\n"
+                      "- Set the correct SKU or Barcode on the variant product in the Shopify store.\n"
+                      "- Once updated, re-import the product or order using the specific import functionality.") % (
+                      name, variant_id)
+        
         return message
 
     def create_or_update_shopify_template_and_variant(self, template_vals, variant_vals, variant_length,
@@ -699,8 +752,11 @@ class ShopifyProductTemplateEpt(models.Model):
         odoo_product = odoo_product_obj.search(attribute_value_domain)
 
         if not odoo_product:
-            message = "Unknown error occurred. Couldn't find product %s with sku %s in Odoo." % (
-                shopify_template.name, sku)
+            message = ("System received an unknown error while processing the order data queue.\n"
+                       "Error message indicates an issue with the product %s with SKU: %s.\n"
+                       "Action Items:\n"
+                       "- Verify the product exists in Odoo with the same SKU.\n"
+                       "- Check if the product data is valid and synced properly.") % (shopify_template.name, sku)
             return message
 
         shopify_product = self.create_or_update_shopify_variant(variant_vals, False, shopify_template, odoo_product)
@@ -1162,8 +1218,11 @@ class ShopifyProductTemplateEpt(models.Model):
                 shopify_product_ids_list.append(shopify_product_ids)
                 if duplicate_barcode and shopify_variant and shopify_variant.product_id and \
                         shopify_variant.product_id.id != duplicate_barcode.id:
-                    message = "Duplicate barcode(%s) found in Product: %s and ID: %s." % (barcode, template_title,
-                                                                                          template_id)
+                    message = ("Attempted to create a new product, but a product already exists in Odoo with Barcode: %s, Product: %s, and Template ID: %s \n"
+                              "Action Items:\n"
+                              "- Change the barcode in the existing Odoo product, archive the product,or update the barcode in the Shopify store.\n"
+                              "- Re-import the product or order using the specific import functionality and process the queue manually.") % (
+                              barcode, template_title, template_id)
                     return message
                 # elif not instance.auto_import_product and not shopify_product_ids and \
                 #         instance.shopify_sync_product_with not in ["barcode", "sku_or_barcode"]:
@@ -1177,18 +1236,30 @@ class ShopifyProductTemplateEpt(models.Model):
 
         total_shopify_sku = len(set(shopify_skus))
         if len(shopify_skus) != total_shopify_sku:
-            message = "Duplicate SKU found in Product %s and ID: %s." % (template_title, template_id)
+            message = ("Attempted to create a new product, but there is more than one variant found for same SKU, with Product: %s, and Template ID: %s \n"
+                      "Action Items:\n"
+                      "- Change the SKU in the existing Odoo product variants, archive the product,or update the SKU in the Shopify store.\n"
+                      "- Re-import the product or order using the specific import functionality and process the queue manually.") % (
+                      template_title, template_id)
             return message
 
         total_shopify_barcodes = len(set(shopify_barcodes))
         if len(shopify_barcodes) != total_shopify_barcodes:
-            message = "Duplicate Barcode found in Product %s and ID: %s." % (template_title, template_id)
+            message = ("Attempted to create a new product, but a product already exists in Odoo with same Barcode, Product: %s, and Template ID: %s \n"
+                      "Action Items:\n"
+                      "- Change the barcode in the existing Odoo product, archive the product,or update the barcode in the Shopify store.\n"
+                      "- Re-import the product or order using the specific import functionality and process the queue manually.") % (
+                      template_title, template_id)
             return message
 
         if not odoo_product and not shopify_product and instance.shopify_sync_product_with in ["barcode",
                                                                                                "sku_or_barcode"]:
             if not shopify_product_ids_list:
-                message = "Duplicate barcode found in Product: %s and ID: %s." % (template_title, template_id)
+                message = ("Attempted to create a new product, but a product already exists in Odoo with same Barcode, Product: %s, and Template ID: %s \n"
+                          "Action Items:\n"
+                          "- Change the barcode in the existing Odoo product, archive the product,or update the barcode in the Shopify store.\n"
+                          "- Re-import the product or order using the specific import functionality and process the queue manually.") % (
+                          template_title, template_id)
                 return message
 
         return message

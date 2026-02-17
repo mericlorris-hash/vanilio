@@ -77,12 +77,16 @@ class ShopifyPaymentReportEpt(models.Model):
             # Use REST API
             instance.connect_in_shopify()
             try:
-                payout_reports = shopify.Payouts().find(status="paid", date_min=start_date, date_max=end_date, limit=250)
+                payout_reports = shopify.Payouts().find(status="paid", date_min=start_date, date_max=end_date,
+                                                        limit=250)
             except Exception as error:
-                message = "Something is wrong while import the payout records : {0}".format(error)
+                message = ("System tried to import the payout report but an error occurred : %s.\n"
+                           "Action Items:\n"
+                           "- Might be chance the payout report is not available no the Shopify store.\n"
+                           "- Tried to import the payout with different date range.") % error
                 log_line_obj.create_common_log_line_ept(shopify_instance_id=instance.id, module="shopify_ept",
-                                                      message=message,
-                                                      model_name=self._name)
+                                                        message=message,
+                                                        model_name=self._name)
                 _logger.info(message)
                 return False
 
@@ -335,9 +339,10 @@ class ShopifyPaymentReportEpt(models.Model):
                 if order_id:
                     transaction.order_id = order_id
                 else:
-                    message = "Transaction line {0} will not automatically reconcile due to " \
-                              "order {1} is not found in odoo.".format(
-                        transaction.transaction_id, transaction.source_order_id)
+                    message = ("System tried to automatically reconcile, but Order: %s was not found in the system.\n"
+                               "Action Items:\n"
+                               "- Import the missing order before processing the payout report.\n"
+                               "- You can import orders using the operation wizard.") % transaction.source_order_id
                     log_lines.append({'message': message,
                                       'shopify_payout_report_line_id': transaction.id})
                     # We can not use shopify order reference here because it may create duplicate name,
@@ -433,8 +438,12 @@ class ShopifyPaymentReportEpt(models.Model):
                                                         x.state == 'posted' and x.move_type == 'out_invoice' and
                                                         x.amount_total == transaction.amount)
             if not invoice_ids:
-                message = "Invoice amount is not matched for order %s in odoo" % \
-                          (order_id.name or transaction.source_order_id)
+                message = ("System tried to automatically reconcile, but the invoice total does not properly match for Order: %s.\n"
+                              "Action Items:\n"
+                              "- Verify the order total, invoice total, and bank statement line amount.\n"
+                              "- The difference might be due to taxes, discounts, or shipping fees.\n"
+                              "- Perform manual adjustments in the invoice "
+                              "and then reconcile again.") % (order_id.name or transaction.source_order_id)
                 log_lines.append({'message': message,
                                   'shopify_payout_report_line_id': transaction.id})
                 return domain, invoice_ids, log_lines
@@ -458,8 +467,12 @@ class ShopifyPaymentReportEpt(models.Model):
                                                             x.state == 'posted' and x.move_type == 'out_refund' and
                                                             x.amount_total == -transaction.amount)
             if not invoice_ids:
-                message = "In Shopify Payout, there is a Refund, but Refund amount is not matched for order %s in" \
-                          "odoo" % (order_id.name or transaction.source_order_id)
+                message = ("System tried to automatically reconcile, but the refund amount does not match for Order: %s.\n"
+                              "Action Items:\n"
+                              "- Verify the refund invoice and ensure the refund total matches the bank statement line.\n"
+                              "- The difference might be due to taxes, discounts, or shipping fees.\n"
+                              "- Perform manual adjustments in the refund invoice "
+                              "and reconcile again.") % (order_id.name or transaction.source_order_id)
                 log_lines.append({'message': message,
                                   'shopify_payout_report_line_id': transaction.id})
                 return domain, invoice_ids, log_lines
@@ -475,7 +488,9 @@ class ShopifyPaymentReportEpt(models.Model):
         """
         journal = self.instance_id.shopify_settlement_report_journal_id
         if not journal:
-            message_body = "You have not configured Payout report Journal in Instance. Please configure it in Settings."
+            message_body = ("Configuration mismatch to import the payout report.\n"
+                            "The Payout Report Journal in the instance is not configured in the settings.\n"
+                            "Please configure it from: Shopify → Configuration → Settings.")
             if self.env.context.get('cron_process'):
                 self.message_post(body=_(message_body))
                 self.is_skip_from_cron = True
@@ -484,8 +499,11 @@ class ShopifyPaymentReportEpt(models.Model):
 
         currency_id = journal.currency_id.id or self.instance_id.shopify_company_id.currency_id.id or False
         if currency_id != self.currency_id.id:
-            message_body = "The Report currency and currency in Journal/Instance are different." \
-                           "\nMake sure the Report currency and the Journal/Instance currency must be same."
+            message_body = ("System tried to import the payout report but found a mismatch between the payout report "
+                            "currency and the currency in the journal configured in the instance.\n"
+                            "Action Items:\n"
+                            "- Ensure the payout report currency and the journal/instance currency are the same.\n"
+                            "- Re-import the payout report using the operation wizard.")
             self.message_post(body=_(message_body))
             raise UserError(_(message_body))
         return journal
@@ -654,8 +672,11 @@ class ShopifyPaymentReportEpt(models.Model):
                 for payment_line in paid_move_lines:
                     self.shopify_reconcile_bank_statement_line_ept(statement_line.id, payment_line.id)
             except Exception as error:
-                message = "Error occurred while reconciling statement line : " + statement_line.payment_ref + \
-                          ".\n" + str(error)
+                message = ("System tried to automatically reconcile but encountered an error while processing the statement line: %s \n"
+                              "Action Items:\n"
+                              "- Verify the payment details.\n"
+                              "- Perform manual reconciliation if needed.") % (
+                                  statement_line.payment_ref + ".\n" + str(error))
                 transaction_line = self.payout_transaction_ids.filtered(
                     lambda x: x.transaction_type == statement_line.shopify_transaction_type and
                               x.transaction_id == statement_line.shopify_transaction_id and x.amount ==
@@ -689,9 +710,9 @@ class ShopifyPaymentReportEpt(models.Model):
             lambda x: x.transaction_type == transaction_type)
 
         if not transaction_account_line:
-            message = "Can't reconcile %s.\nPlease configure an account for the Transaction type : %s.\nGo " \
-                      "to Configuration > Instances > Open Instance and set account in Payout Configuration " \
-                      "Tab." % (statement_line.payment_ref, transaction_type)
+            message = ("Can't reconcile %s.\nPlease configure an account for the Transaction type : %s.\n"
+                       "Go to: Configuration → Instances → Open Instance → Payout Configuration Tab, and set the "
+                       "appropriate account.") % (statement_line.payment_ref, transaction_type)
             if self.env.context.get("cron_process"):
                 log_lines.append({"message": message})
                 return log_lines
@@ -750,9 +771,10 @@ class ShopifyPaymentReportEpt(models.Model):
                 #     log_lines.append(log_line)
             except Exception as error:
                 if self.env.context.get("cron_process"):
-                    message = "Error occurred while reconciling statement line : " + statement_line.payment_ref + \
-                              ".\n" + str(error)
-
+                    message = ("System tried to automatically reconcile but encountered an error while processing the statement line: %s \n"
+                                  "Action Items:\n"
+                                  "- Verify the payment details.\n"
+                                  "- Perform manual reconciliation if needed.") % (statement_line.payment_ref + ".\n" + str(error))
                     transaction_line = self.payout_transaction_ids.filtered(
                         lambda x: x.transaction_type == statement_line.shopify_transaction_type and
                                   x.transaction_id == statement_line.shopify_transaction_id and x.amount ==

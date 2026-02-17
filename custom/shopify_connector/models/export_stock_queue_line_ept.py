@@ -157,12 +157,11 @@ class ShopifyExportStockQueueLineEpt(models.Model):
                                 queue_line.write({'state': 'done'})
                             continue
                         if hasattr(error, "response"):
-                            message = "Error while Export stock for Product ID: %s & Product Name: '%s' for instance:" \
-                                      "'%s'not found in Shopify store\nError: %s\n%s" % (
-                                          odoo_product.id, odoo_product.name, instance.name,
-                                          str(error.response.code) + " " + error.response.msg,
-                                          json.loads(error.response.body.decode()).get("errors")[0]
-                                      )
+                            message = ("System tried to export stock but received an error from the Shopify store with Product ID: %s and name: %s for the %s instance.\n"
+                                          "Action Items:\n"
+                                          "- Verify the product's existence on the Shopify store using the given name and Product ID.\n"
+                                          "- If it has been deleted, archive the product from the Shopify product layer "
+                                          "in Odoo.") % (odoo_product.id, odoo_product.name, instance.name)
                             log_line = common_log_line_obj.create_common_log_line_ept(shopify_instance_id=instance.id,module="shopify_ept",
                                                                                       message=message,
                                                                                       model_name=model,
@@ -170,8 +169,11 @@ class ShopifyExportStockQueueLineEpt(models.Model):
                             queue_line.write({"state": "failed"})
                             continue
                     except Exception as error:
-                        message = "Error while Export stock for Product ID: %s & Product Name: '%s' for instance: " \
-                                  "'%s'\nError: %s" % (odoo_product.id, odoo_product.name, instance.name, str(error))
+                        message = ("System tried to export stock but received an error from the Shopify store with Product ID: %s and name: %s for the %s instance.\n"
+                                      "Action Items:\n"
+                                      "- Verify the product's existence on the Shopify store using the given name and Product ID.\n"
+                                      "- If it has been deleted, archive the product from the Shopify product layer "
+                                      "in Odoo.") % (odoo_product.id, odoo_product.name, instance.name)
                         log_line = common_log_line_obj.create_common_log_line_ept(shopify_instance_id=instance.id,module="shopify_ept",
                                                                                   message=message,
                                                                                   model_name=model,

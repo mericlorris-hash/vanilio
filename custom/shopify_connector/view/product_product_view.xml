@@ -140,6 +140,28 @@
         </field>
     </record>
 
+    <record id="act_shopify_product" model="ir.actions.act_window">
+        <field name="name">Shopify Product</field>
+        <field name="res_model">shopify.product.product.ept</field>
+        <field name="view_mode">list,form</field>
+        <field name="domain">[('product_id','=',active_id)]</field>
+        <field name="context">{'search_default_product_id': active_id}</field>
+    </record>
+
+    <record id="product_product_shopify_button" model="ir.ui.view">
+        <field name="name">product.product.shopify.button</field>
+        <field name="model">product.product</field>
+        <field name="inherit_id" ref="product.product_normal_form_view"/>
+        <field name="arch" type="xml">
+            <div name="button_box" position="inside">
+                <button class="oe_stat_button" name="%(shopify_ept.act_shopify_product)d" type="action"
+                        invisible="type =='service'" icon="fa-external-link" help="Shopify Products">
+                    <field string="Shopify Products" name="shopify_product_count" widget="statinfo"/>
+                </button>
+            </div>
+        </field>
+    </record>
+
 
     <menuitem id="menu_item_shopify_variants_ept" name="Product Variants"
               parent="shopify_ept.menu_item_parent_shopify_products_ept"

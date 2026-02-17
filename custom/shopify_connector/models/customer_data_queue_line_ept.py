@@ -141,7 +141,7 @@ class ShopifyCustomerDataQueueLineEpt(models.Model):
             instance = queue.shopify_instance_id
             if instance.active:
                 query = """
-                    UPDATE shopify_product_data_queue_ept
+                    UPDATE shopify_customer_data_queue_ept
                     SET is_process_queue = %s
                     WHERE is_process_queue = %s
                 """

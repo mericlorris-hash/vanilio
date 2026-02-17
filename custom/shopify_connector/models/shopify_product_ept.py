@@ -277,7 +277,10 @@ class ShopifyProductProductEpt(models.Model):
             result = new_product.save()
 
             if not result:
-                message = "Product %s not exported in Shopify Store." % template.name
+                message = ("System tried to export the product %s from Odoo to Shopify but received an unknown error in the response.\n"
+                              "Action Items:\n"
+                              "- Verify the product attributes and other configurations.\n"
+                              "- Try exporting the product again from the Shopify product layer.\n") % template.name
                 common_log_line_obj.create_common_log_line_ept(shopify_instance_id=instance.id, message=message,
                                                                module="shopify_ept",
                                                                model_name=model)
@@ -419,8 +422,11 @@ class ShopifyProductProductEpt(models.Model):
                 time.sleep(int(float(error.response.headers.get('Retry-After', 5))))
                 new_product = shopify.Product().find(template.shopify_tmpl_id)
         except Exception as error:
-            message = "Template %s not found in shopify while updating Product.\nError: %s" % (
-                template.shopify_tmpl_id, str(error))
+            message = ("System tried to update product details from Odoo to the Shopify store for product template ID: %s but can not updated.\n"
+                          "Action Items:\n"
+                          "- Ensure the product exists on the Shopify store.\n"
+                          "- If the product has been deleted from Shopify, archive it in the Shopify product layer in Odoo.") % (
+                          template.shopify_tmpl_id)
             self.env["common.log.lines.ept"].create_common_log_line_ept(shopify_instance_id=instance.id,
                                                                         module="shopify_ept",
                                                                         message=message,
@@ -520,7 +526,7 @@ class ShopifyProductProductEpt(models.Model):
             [("id", "in", variant.product_id.product_template_attribute_value_ids.ids)],
             order="attribute_id")
         for att_value in att_values:
-            if option_index > 3:
+            if option_index > 2:
                 continue
             variant_vals.update(
                 {option_index_value[option_index]: att_value.with_context(lang=instance.shopify_lang_id.code).name})
@@ -703,7 +709,10 @@ class ShopifyProductProductEpt(models.Model):
         location_ids = self.env["shopify.location.ept"].search(
             [("instance_id", "=", instance.id), ('legacy', '=', False)])
         if not location_ids:
-            message = "Location not found for instance %s while update stock" % instance.name
+            message = ("System tried to update stock from Odoo to the Shopify store, but the Shopify location was not found for the %s instance.\n"
+                          "Action Items:\n"
+                          "- Verify the Shopify location under: Shopify → Configuration → Shopify Locations.\n"
+                          "- If the locations are not available in Odoo, import them using the operation wizard.") % instance.name
             log_lines.append(self.shopify_create_log(instance, message, model))
 
         shopify_templates = self.check_available_products_in_shopify(instance)
@@ -715,7 +724,10 @@ class ShopifyProductProductEpt(models.Model):
         for location_id in location_ids:
             shopify_location_warehouse = location_id.export_stock_warehouse_ids or False
             if not shopify_location_warehouse:
-                message = "No Warehouse found for Export Stock in Shopify Location: %s" % location_id.name
+                message = ("System tried to find the warehouse for Shopify location %s to export stock but it was not found.\n"
+                              "Action Items:\n"
+                              "- Verify the Shopify location under: Shopify → Configuration → Shopify Locations.\n"
+                              "- Set the appropriate export stock warehouse mapping.") % location_id.name
                 log_lines.append(self.shopify_create_log(instance, message, model))
                 continue
 
@@ -731,24 +743,29 @@ class ShopifyProductProductEpt(models.Model):
                 odoo_product = shopify_product.product_id
                 if odoo_product.type == "consu" and odoo_product.is_storable:
                     if not shopify_product.inventory_item_id:
-                        message = "Inventory Item Id did not found for Shopify Product Variant ID " \
-                                  "%s with name %s for instance %s while Export stock" % (
-                                      shopify_product.id, shopify_product.name, instance.name)
+                        message = ("System tried to export stock for Shopify product variant ID: %s with name %s for "
+                                   "the %s instance, but the Inventory Item was not found.\n"
+                                   "Action Items:\n"
+                                   "- Go to: Shopify → Products → Product Variants and check if the Inventory Item ID is set.\n"
+                                   "- If not, sync the product using the Import Specific Product functionality from the "
+                                   "operation wizard to set the Inventory Item ID.") % (shopify_product.id,
+                                    shopify_product.name, instance.name)
                         log_lines.append(self.shopify_create_log(instance, message, model))
                         continue
 
                     quantity = self.compute_qty_for_export_stock(product_stock, shopify_product, odoo_product)
+                    export_log_msg = "System tried to export stock but received an error from the Shopify store " \
+                                     "with Product ID: %s and name: %s for the %s instance.\n" \
+                                     "Action Items:\n" \
+                                     "- Verify the product's existence on the Shopify store using the given name and Product ID.\n" \
+                                     "- If it has been deleted, archive the product from the Shopify product layer " \
+                                     "in Odoo."
                     try:
                         shopify.InventoryLevel.set(location_id.shopify_location_id, shopify_product.inventory_item_id,
                                                    int(quantity))
                     except ResourceNotFound as error:
                         if hasattr(error, "response"):
-                            message = "Error while Export stock for Product ID: %s & Product Name: '%s' for instance:" \
-                                      "'%s'not found in Shopify store\nError: %s\n%s" % (
-                                          odoo_product.id, odoo_product.name, instance.name,
-                                          str(error.response.code) + " " + error.response.msg,
-                                          json.loads(error.response.body.decode()).get("errors")[0]
-                                      )
+                            message = (export_log_msg) %(odoo_product.id, odoo_product.name, instance.name)
                             log_lines.append(self.shopify_create_log(instance, message, model))
                     except ClientError as error:
                         if hasattr(error,
@@ -763,15 +780,10 @@ class ShopifyProductProductEpt(models.Model):
                                 0] == 'Inventory item does not have inventory tracking enabled':
                                 shopify_product.write({'inventory_management': "Dont track Inventory"})
                             continue
-                        message = "Error while Export stock for Product ID: %s & Product Name: '%s' for instance:" \
-                                  "'%s'\nError: %s\n%s" % (odoo_product.id, odoo_product.name, instance.name,
-                                                           str(error.response.code) + " " + error.response.msg,
-                                                           json.loads(error.response.body.decode()).get("errors")[0]
-                                                           )
+                        message = (export_log_msg) %(odoo_product.id, odoo_product.name, instance.name)
                         log_lines.append(self.shopify_create_log(instance, message, model))
                     except Exception as error:
-                        message = "Error while Export stock for Product ID: %s & Product Name: '%s' for instance: " \
-                                  "'%s'\nError: %s" % (odoo_product.id, odoo_product.name, instance.name, str(error))
+                        message = (export_log_msg) %(odoo_product.id, odoo_product.name, instance.name)
                         log_lines.append(self.shopify_create_log(instance, message, model))
 
                     if not self.env.context.get('is_process_from_selected_product'):
@@ -834,7 +846,10 @@ class ShopifyProductProductEpt(models.Model):
         location_ids = self.env["shopify.location.ept"].search(
             [("instance_id", "=", instance.id), ('legacy', '=', False)])
         if not location_ids:
-            message = "Location not found for instance %s while update stock" % instance.name
+            message = ("System tried to update stock from Odoo to the Shopify store, but the Shopify location was not found for the %s instance.\n"
+                       "Action Items:\n"
+                       "- Verify the Shopify location under: Shopify → Configuration → Shopify Locations.\n"
+                       "- If the locations are not available in Odoo, import them using the operation wizard.") % instance.name
             self.shopify_create_log(instance, message, model)
 
         # if not self._context.get('is_process_from_selected_product'):
@@ -849,7 +864,10 @@ class ShopifyProductProductEpt(models.Model):
         for location_id in location_ids:
             shopify_location_warehouse = location_id.export_stock_warehouse_ids or False
             if not shopify_location_warehouse:
-                message = "No Warehouse found for Export Stock in Shopify Location: %s" % location_id.name
+                message = ("System tried to find the warehouse for Shopify location %s to export stock but it was not found.\n"
+                              "Action Items:\n"
+                              "- Verify the Shopify location under: Shopify → Configuration → Shopify Locations.\n"
+                              "- Set the appropriate export stock warehouse mapping.") % location_id.name
                 self.shopify_create_log(instance, message, model)
                 continue
 
@@ -975,7 +993,10 @@ class ShopifyProductProductEpt(models.Model):
             for location_id in location_ids:
                 shopify_location_warehouse = location_id.import_stock_warehouse_id or False
                 if not shopify_location_warehouse:
-                    message = "No Warehouse found for importing stock in Shopify Location: %s" % location_id.name
+                    message = ("System tried to find the warehouse for Shopify location %s to export stock but it was not found.\n"
+                               "Action Items:\n"
+                               "- Verify the Shopify location under: Shopify → Configuration → Shopify Locations.\n"
+                               "- Set the appropriate export stock warehouse mapping.") % location_id.name
                     self.shopify_create_log(instance, message, model)
                     _logger.info(message)
                     continue
@@ -1010,7 +1031,10 @@ class ShopifyProductProductEpt(models.Model):
         location_ids = self.env["shopify.location.ept"].search(
             [("legacy", "=", False), ("instance_id", "=", instance.id)])
         if not location_ids:
-            message = "Location not found for instance %s while Importing stock" % instance.name
+            message = ("System tried to import stock from Odoo to the Shopify store, but the Shopify location was not found for the %s instance.\n"
+                          "Action Items:\n"
+                          "- Verify the Shopify location under: Shopify → Configuration → Shopify Locations.\n"
+                          "- If the locations are not available in Odoo, import them using the operation wizard.") % instance.name
             self.shopify_create_log(instance, message, model)
             _logger.info(message)
             return False
@@ -1031,7 +1055,9 @@ class ShopifyProductProductEpt(models.Model):
                 # Use helper to fetch all pages and return combined response
                 inventory_levels = inventory_helper.get_all_inventory_levels(location_id.shopify_location_id, first=250)
             except Exception as error:
-                message = "Error while import stock for instance %s\nError: %s" % (instance.name, str(error))
+                message = ("System tried to import stock but received an unknown error for the Shopify %s instance.\n"
+                           "Action Items:\n"
+                           "- Verify the inventory levels in the Shopify store.") % instance.name
                 self.shopify_create_log(instance, message, model)
                 _logger.info(message)
                 return False
@@ -1042,8 +1068,9 @@ class ShopifyProductProductEpt(models.Model):
                 if len(inventory_levels) == 250:
                     inventory_levels = self.shopify_list_all_inventory_level(inventory_levels)
             except Exception as error:
-                message = "Error while import stock for instance %s\nError: %s" % (
-                    instance.name, str(error.response.code) + " " + error.response.msg)
+                message = ("System tried to import stock but received an unknown error for the Shopify %s instance.\n"
+                           "Action Items:\n"
+                           "- Verify the inventory levels in the Shopify store.") % instance.name
                 self.shopify_create_log(instance, message, model)
                 _logger.info(message)
                 return False

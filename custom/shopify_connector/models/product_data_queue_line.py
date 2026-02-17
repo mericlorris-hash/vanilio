@@ -74,7 +74,7 @@ class ShopifyProductDataQueueLineEpt(models.Model):
             "shopify_ept.process_shopify_product_queue")
 
         for queue in queues:
-            product_data_queue_line_ids = queue.product_data_queue_lines
+            product_data_queue_line_ids = queue.product_data_queue_lines.filtered(lambda x: x.state == "draft")
 
             # For counting the queue crashes and creating schedule activity for the queue.
             queue.queue_process_count += 1

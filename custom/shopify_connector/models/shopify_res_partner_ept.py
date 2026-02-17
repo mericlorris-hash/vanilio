@@ -27,7 +27,10 @@ class ShopifyResPartnerEpt(models.Model):
         email = vals.get("email", "")
         
         if not first_name and not last_name and not email:
-            message = "First name, Last name and Email are not found in customer data."
+            message = ("System tried to create a customer but did not receive essential details like First Name, Last Name, or Email in the response.\n"
+                        "Action Items:\n"
+                        "- Verify the customer details in the queue response or directly on the Shopify store.\n"
+                        "- Update the customer data on the Shopify store, then re-import the customer or order using the specific order import functionality.")
             common_log_line_obj.create_common_log_line_ept(shopify_instance_id=instance.id, module="shopify_ept",
                                                            message=message,
                                                            model_name='res.partner',
